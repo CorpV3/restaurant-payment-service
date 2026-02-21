@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: Build and Deploy Payment Service
 
 on:
   push:
@@ -7,16 +7,19 @@ on:
     branches: [main]
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: shadrachdoc/restaurant-payment-service
+  DOCKER_IMAGE: shadrach85/restaurant-payment-service
+  SERVICE_NAME: payment-service
+  VALUES_FILE: helm/restaurant-system/values-test.yaml
+  VALUES_KEY: paymentService
 
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -29,57 +32,78 @@ jobs:
           pip install pytest pytest-asyncio httpx
 
       - name: Run tests
-        run: pytest tests/ -v
-        continue-on-error: true
+        run: pytest tests/ -v --tb=short || true
 
-  build-and-push:
-    needs: test
+  build-and-push-docker:
+    needs: build-and-test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    permissions:
-      contents: read
-      packages: write
-
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    outputs:
+      short_sha: ${{ steps.vars.outputs.short_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Log in to Container Registry
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+      - name: Get short SHA
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ steps.vars.outputs.short_sha }}
+            ${{ env.DOCKER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/restaurant-infrastructure
+          token: ${{ secrets.GH_PAT }}
+          path: infrastructure
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
 
       - name: Update Helm values
         run: |
-          git clone https://x-access-token:${{ secrets.INFRA_REPO_TOKEN }}@github.com/shadrachdoc/restaurant-infrastructure.git
-          cd restaurant-infrastructure
+          cd infrastructure
+          yq -i '.${{ env.VALUES_KEY }}.image.tag = "${{ needs.build-and-push-docker.outputs.short_sha }}"' ${{ env.VALUES_FILE }}
+          echo "Updated ${{ env.VALUES_KEY }}.image.tag to: ${{ needs.build-and-push-docker.outputs.short_sha }}"
 
-          # Update image tag in values.yaml
-          TAG=$(echo ${{ github.sha }} | cut -c1-7)
-          yq e -i ".paymentService.image.tag = \"$TAG\"" helm/restaurant-system/values.yaml
-
+      - name: Commit and push
+        run: |
+          cd infrastructure
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add .
-          git commit -m "Update payment-service image to $TAG" || exit 0
+          git diff --staged --quiet || git commit -m "Deploy ${{ env.SERVICE_NAME }}: ${{ needs.build-and-push-docker.outputs.short_sha }}"
           git push
-        continue-on-error: true
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service**: ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.DOCKER_IMAGE }}:${{ needs.build-and-push-docker.outputs.short_sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Helm values key**: ${{ env.VALUES_KEY }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ArgoCD will automatically sync via Helm**" >> $GITHUB_STEP_SUMMARY
