@@ -4,6 +4,9 @@ from pydantic import BaseModel
 from enum import Enum
 from datetime import datetime
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -160,6 +163,7 @@ async def charge_card_terminal(request: CardTerminalRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Terminal error: {str(e)}")
 
+    logger.info("triPOS response: %s", result)
     # triPOS response: _statusCode or statusCode = "Approved" / "Declined"
     status_val = result.get("_statusCode") or result.get("statusCode", "")
     approved = str(status_val).lower() == "approved"
