@@ -133,6 +133,47 @@ async def process_sumup_payment(payment_id: str, payment: PaymentRequest) -> Pay
     )
 
 
+class CardTerminalRequest(BaseModel):
+    order_id: str
+    amount: float
+    lane_id: Optional[int] = None
+
+
+class CardTerminalResponse(BaseModel):
+    approved: bool
+    transaction_id: Optional[str]
+    card_brand: Optional[str]
+    card_last_four: Optional[str]
+    message: str
+
+
+@router.post("/card-terminal", response_model=CardTerminalResponse)
+async def charge_card_terminal(request: CardTerminalRequest):
+    """Charge a physical card terminal via triPOS Cloud. Blocks until card is presented."""
+    from app.services.tripos import charge_card_terminal as tripos_charge
+    try:
+        result = await tripos_charge(
+            amount=request.amount,
+            order_ref=request.order_id,
+            lane_id=request.lane_id,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Terminal error: {str(e)}")
+
+    # triPOS response: _statusCode or statusCode = "Approved" / "Declined"
+    status_val = result.get("_statusCode") or result.get("statusCode", "")
+    approved = str(status_val).lower() == "approved"
+
+    card = result.get("card") or {}
+    return CardTerminalResponse(
+        approved=approved,
+        transaction_id=result.get("transactionId"),
+        card_brand=card.get("type") or result.get("cardType"),
+        card_last_four=card.get("last4") or result.get("maskedPan", "")[-4:] or None,
+        message=result.get("statusMessage") or status_val or "Unknown",
+    )
+
+
 @router.get("/{payment_id}", response_model=PaymentResponse)
 async def get_payment(payment_id: str):
     """Get payment details by ID"""

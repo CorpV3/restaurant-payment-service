@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     SUMUP_API_KEY: str = ""
     SUMUP_MERCHANT_CODE: str = ""
 
+    # triPOS Cloud (Worldpay in-person card terminal)
+    TRIPOS_BASE_URL: str = "https://triposcert.vantiv.com"
+    TRIPOS_ACCEPTOR_ID: str = ""
+    TRIPOS_ACCOUNT_ID: str = ""
+    TRIPOS_ACCOUNT_TOKEN: str = ""
+    TRIPOS_APPLICATION_ID: str = ""
+    TRIPOS_LANE_ID: int = 1
+
     # API Gateway
     API_GATEWAY_URL: str = "http://api-gateway:8000"
 
