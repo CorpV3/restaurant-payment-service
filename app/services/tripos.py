@@ -18,16 +18,22 @@ import httpx
 from app.core.config import settings
 
 
-def _build_auth_header(body: str) -> str:
+TRIPOS_HOSTS = {
+    "cert": "https://triposcert.vantiv.com",
+    "prod": "https://tripos.worldpay.com",
+}
+
+
+def _build_auth_header(body: str, acceptor_id: str, application_id: str, account_token: str) -> str:
     """Build tp-authorization header value with HMAC-SHA256 signature."""
-    key = settings.TRIPOS_ACCOUNT_TOKEN.encode("utf-8")
+    key = account_token.encode("utf-8")
     msg = body.encode("utf-8")
     hash_bytes = hmac.new(key, msg, hashlib.sha256).digest()
     hash_key = base64.b64encode(hash_bytes).decode("utf-8")
     return (
         f"Version=1.0,"
-        f"AcceptorID={settings.TRIPOS_ACCEPTOR_ID},"
-        f"ApplicationID={settings.TRIPOS_APPLICATION_ID},"
+        f"AcceptorID={acceptor_id},"
+        f"ApplicationID={application_id},"
         f"ApplicationVersion=1.0.0,"
         f"ApplicationName=RestaurantPOS,"
         f"HashKey={hash_key}"
@@ -37,18 +43,31 @@ def _build_auth_header(body: str) -> str:
 async def charge_card_terminal(
     amount: float,
     order_ref: str,
-    lane_id: int | None = None,
+    lane_id: int,
+    config: dict | None = None,
 ) -> dict:
     """
     Send a sale to the physical card terminal via triPOS Cloud.
+    Uses per-restaurant config if provided, falls back to global settings.
 
     Blocks until customer taps/inserts card (up to 90 seconds).
     Returns the raw triPOS response dict.
     """
-    lane = lane_id if lane_id is not None else settings.TRIPOS_LANE_ID
+    if config:
+        acceptor_id = config["acceptor_id"]
+        account_id = config["account_id"]
+        account_token = config["account_token"]
+        application_id = config["application_id"]
+        base_url = TRIPOS_HOSTS.get(config.get("environment", "cert"), TRIPOS_HOSTS["cert"])
+    else:
+        acceptor_id = settings.TRIPOS_ACCEPTOR_ID
+        account_id = settings.TRIPOS_ACCOUNT_ID
+        account_token = settings.TRIPOS_ACCOUNT_TOKEN
+        application_id = settings.TRIPOS_APPLICATION_ID
+        base_url = settings.TRIPOS_BASE_URL
 
     payload = {
-        "laneId": lane,
+        "laneId": lane_id,
         "transactionAmount": round(amount, 2),
         "marketCode": "Retail",
         "referenceNumber": order_ref[:12],
@@ -60,17 +79,17 @@ async def charge_card_terminal(
 
     headers = {
         "Content-Type": "application/json",
-        "tp-application-id": settings.TRIPOS_APPLICATION_ID,
+        "tp-application-id": application_id,
         "tp-application-name": "RestaurantPOS",
         "tp-application-version": "1.0.0",
-        "tp-authorization": _build_auth_header(body),
-        "tp-express-acceptor-id": settings.TRIPOS_ACCEPTOR_ID,
-        "tp-express-account-id": settings.TRIPOS_ACCOUNT_ID,
-        "tp-express-account-token": settings.TRIPOS_ACCOUNT_TOKEN,
+        "tp-authorization": _build_auth_header(body, acceptor_id, application_id, account_token),
+        "tp-express-acceptor-id": acceptor_id,
+        "tp-express-account-id": account_id,
+        "tp-express-account-token": account_token,
         "tp-request-id": request_id,
     }
 
-    url = f"{settings.TRIPOS_BASE_URL}/api/v1/sale"
+    url = f"{base_url}/api/v1/sale"
     async with httpx.AsyncClient(timeout=90.0) as client:
         response = await client.post(url, headers=headers, content=body)
         response.raise_for_status()

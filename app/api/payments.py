@@ -137,9 +137,10 @@ async def process_sumup_payment(payment_id: str, payment: PaymentRequest) -> Pay
 
 
 class CardTerminalRequest(BaseModel):
+    restaurant_id: str
     order_id: str
     amount: float
-    lane_id: Optional[int] = None
+    lane_id: int
 
 
 class CardTerminalResponse(BaseModel):
@@ -150,21 +151,50 @@ class CardTerminalResponse(BaseModel):
     message: str
 
 
+async def _get_restaurant_payment_config(restaurant_id: str) -> dict:
+    """Fetch payment config for a restaurant from restaurant-service."""
+    import httpx
+    from app.core.config import settings
+    url = f"{settings.API_GATEWAY_URL}/api/v1/restaurants/{restaurant_id}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url)
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail="Could not fetch restaurant payment config")
+        return r.json()
+
+
 @router.post("/card-terminal", response_model=CardTerminalResponse)
 async def charge_card_terminal(request: CardTerminalRequest):
-    """Charge a physical card terminal via triPOS Cloud. Blocks until card is presented."""
+    """Charge a physical card terminal via triPOS Cloud using the restaurant's own credentials."""
     from app.services.tripos import charge_card_terminal as tripos_charge
+
+    restaurant = await _get_restaurant_payment_config(request.restaurant_id)
+
+    if not restaurant.get("tripos_enabled"):
+        raise HTTPException(status_code=400, detail="Worldpay triPOS is not enabled for this restaurant")
+
+    tripos_config = {
+        "acceptor_id": restaurant.get("tripos_acceptor_id"),
+        "account_id": restaurant.get("tripos_account_id"),
+        "account_token": restaurant.get("tripos_account_token"),
+        "application_id": restaurant.get("tripos_application_id"),
+        "environment": restaurant.get("tripos_environment", "cert"),
+    }
+    if not all([tripos_config["acceptor_id"], tripos_config["account_id"],
+                tripos_config["account_token"], tripos_config["application_id"]]):
+        raise HTTPException(status_code=400, detail="Worldpay triPOS credentials are incomplete")
+
     try:
         result = await tripos_charge(
             amount=request.amount,
             order_ref=request.order_id,
             lane_id=request.lane_id,
+            config=tripos_config,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Terminal error: {str(e)}")
 
     logger.info("triPOS response: %s", result)
-    # triPOS response: _statusCode or statusCode = "Approved" / "Declined"
     status_val = result.get("_statusCode") or result.get("statusCode", "")
     approved = str(status_val).lower() == "approved"
 
