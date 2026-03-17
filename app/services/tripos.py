@@ -13,6 +13,7 @@ import hmac
 import base64
 import json
 import uuid
+import time
 import httpx
 
 from app.core.config import settings
@@ -70,7 +71,7 @@ async def charge_card_terminal(
         "laneId": lane_id,
         "transactionAmount": round(amount, 2),
         "marketCode": "Retail",
-        "referenceNumber": order_ref[:12],
+        "referenceNumber": (order_ref[:8] + str(int(time.time()))[-4:])[:12],
         "clerkNumber": "1",
         "ticketNumber": order_ref[:20],
     }
