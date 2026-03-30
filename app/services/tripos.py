@@ -142,7 +142,7 @@ async def return_card_terminal(
         "tp-request-id": request_id,
     }
 
-    url = f"{base_url}/api/v1/return"
+    url = f"{base_url}/api/v1/refund"
     async with httpx.AsyncClient(timeout=90.0) as client:
         response = await client.post(url, headers=headers, content=body)
         response.raise_for_status()
