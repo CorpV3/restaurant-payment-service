@@ -118,20 +118,36 @@ async def process_stripe_payment(payment_id: str, payment: PaymentRequest) -> Pa
 
 
 async def process_sumup_payment(payment_id: str, payment: PaymentRequest) -> PaymentResponse:
-    """Process payment through SumUp"""
-    # TODO: Implement actual SumUp integration
+    """Create a SumUp hosted checkout and return the payment URL."""
+    from app.services.sumup import create_checkout
+    from app.core.config import settings
+
+    if not settings.SUMUP_API_KEY:
+        raise HTTPException(status_code=503, detail="SumUp not configured")
+
+    total = round(payment.amount + payment.tip_amount, 2)
+    checkout = await create_checkout(
+        api_key=settings.SUMUP_API_KEY,
+        merchant_code=settings.SUMUP_MERCHANT_CODE,
+        amount=total,
+        currency=payment.currency,
+        order_id=payment.order_id,
+        description=f"Order {payment.order_id[:8].upper()}",
+        return_url=f"https://testenv.corpv3.com/payment/complete?order_id={payment.order_id}",
+    )
+
     return PaymentResponse(
         id=payment_id,
         order_id=payment.order_id,
-        amount=payment.amount + payment.tip_amount,
+        amount=total,
         currency=payment.currency,
         method=payment.method,
         gateway=PaymentGateway.SUMUP,
-        status=PaymentStatus.COMPLETED,
-        transaction_id=f"SU-{payment_id[:12]}",
-        card_last_four="1234",
-        card_brand="mastercard",
-        receipt_url=None,
+        status=PaymentStatus.PENDING,
+        transaction_id=checkout["checkout_id"],
+        card_last_four=None,
+        card_brand=None,
+        receipt_url=checkout["checkout_url"],
         created_at=datetime.utcnow()
     )
 
@@ -274,8 +290,17 @@ async def get_payments_by_order(order_id: str):
     return []
 
 
+@router.get("/sumup/checkout/{checkout_id}/status")
+async def sumup_checkout_status(checkout_id: str):
+    """Poll SumUp for checkout payment status (PENDING | PAID | FAILED)."""
+    from app.services.sumup import get_checkout_status
+    from app.core.config import settings
+    if not settings.SUMUP_API_KEY:
+        raise HTTPException(status_code=503, detail="SumUp not configured")
+    return await get_checkout_status(settings.SUMUP_API_KEY, checkout_id)
+
+
 @router.post("/{payment_id}/capture")
 async def capture_payment(payment_id: str):
     """Capture a pre-authorized payment"""
-    # TODO: Implement capture logic
     return {"status": "captured", "payment_id": payment_id}
